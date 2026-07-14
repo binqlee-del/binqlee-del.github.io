@@ -1,0 +1,73 @@
+name: Mirror Netlify site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mirror.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crawl the Netlify site
+        run: |
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urljoin, urlsplit
+          from urllib.request import Request, urlopen
+
+          origin = 'https://binqlee-notes.netlify.app'
+          host = 'binqlee-notes.netlify.app'
+          queue = ['/']
+          seen = set()
+
+          class Links(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = []
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a':
+                      href = dict(attrs).get('href')
+                      if href:
+                          self.hrefs.append(href)
+
+          while queue:
+              path = queue.pop(0)
+              if path in seen:
+                  continue
+              seen.add(path)
+              url = origin + path
+              request = Request(url, headers={'User-Agent': 'GitHub-Pages-Mirror/1.0'})
+              data = urlopen(request, timeout=30).read()
+              target = Path('/tmp/public/index.html') if path == '/' else Path('/tmp/public') / path.lstrip('/') / 'index.html'
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
+              parser = Links()
+              parser.feed(data.decode('utf-8'))
+              for href in parser.hrefs:
+                  parts = urlsplit(urljoin(url, href))
+                  if parts.scheme in ('http', 'https') and parts.netloc == host:
+                      clean = parts.path or '/'
+                      if clean not in seen and clean not in queue:
+                          queue.append(clean)
+
+          print(f'Mirrored {len(seen)} pages')
+          PY
+      - name: Publish mirror branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan gh-pages
+          git rm -rf .
+          cp -R /tmp/public/. .
+          touch .nojekyll
+          git add -A
+          git commit -m 'Mirror Netlify site'
+          git push --force origin gh-pages
